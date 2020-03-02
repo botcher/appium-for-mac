@@ -682,10 +682,16 @@ NSInteger const kPredicateRightOperand = 1;
                                        context:nil];
     
     //NSLog(@"Launching app with url: %@", url);
-    [[NSWorkspace sharedWorkspace] performSelectorOnMainThread:@selector(launchApplication:) withObject:url waitUntilDone:NO];
+    NSURL* appUrl = [NSURL URLWithString:url];
+    if (appUrl && appUrl.scheme) {
+        [[NSWorkspace sharedWorkspace] openURL:appUrl];
+        //[[NSWorkspace sharedWorkspace] performSelectorOnMainThread:@selector(openURL:) withObject:appUrl waitUntilDone:NO];
+    } else {
+        [[NSWorkspace sharedWorkspace] performSelectorOnMainThread:@selector(launchApplication:) withObject:url waitUntilDone:NO];
+    }
     
     long errorCode = dispatch_semaphore_wait(self.timedEventsCompleted, waitInterval);    
-    
+   
     if (errorCode == noErr) {
         //NSLog(@"Application launched with url: %@ (%@)", [[NSWorkspace sharedWorkspace] frontmostApplication], url);
         // Now use AppleScript and Accessibility to connect to the running app.
@@ -1109,19 +1115,29 @@ const NSTimeInterval kModifierPause = 0.05;
 // The first pathComponent specifies a child element of rootUIElement. 
 - (NSArray *)findAllUsingAXPathComponents:(NSArray *)axPathComponents rootUIElement:(PFUIElement *)rootUIElement
 {
+    NSMutableArray *matchedChildren = [NSMutableArray array];
+    NSString *firstPathComponent = [axPathComponents objectAtIndex:0];
+    if ([firstPathComponent isEqualToString:@".."]) {
+       if ([axPathComponents count] <= 1) {
+          [matchedChildren addObject:rootUIElement.AXParent];
+          return matchedChildren;
+       }
+       NSMutableArray *childAXPathComponents = [axPathComponents mutableCopy];
+       [childAXPathComponents removeObjectAtIndex:0];
+       return [self findAllUsingAXPathComponents:childAXPathComponents rootUIElement:rootUIElement.AXParent];
+    }
+
     // If there aren't any child elements at all, we are done.
     NSArray *childUIElements = rootUIElement.AXChildren;
     if (!childUIElements || [childUIElements count] == 0) {
         return @[];
     }
-    
-    NSString *firstPathComponent = [axPathComponents objectAtIndex:0];
+   
     NSDictionary *parsedComponent = [self parseRoleAndPredicateString:firstPathComponent];
     if (!parsedComponent || [parsedComponent count] == 0) {
         return @[];
     }
-    NSMutableArray *matchedChildren = [NSMutableArray array];
-    
+  
     // Scan the child elements to match the role and (if specified) predicate.
     // First make an array of similar child elements with the same AXRole.
     // Search the similar elements for predicate or index match.
@@ -1199,15 +1215,20 @@ const NSTimeInterval kModifierPause = 0.05;
             // A name-value pair is available. Try to match by string.
             NSString *attributeName = operation[kPredicateAttributeName];
             NSString *attributeValue = operation[kPredicateAttributeValue];
+            BOOL isPartialMatch = [attributeValue hasSuffix:@"..."];
+            if (isPartialMatch) {
+                attributeValue = [attributeValue substringToIndex:attributeValue.length - 3];
+            }
             if ([uiElement existsAttribute:attributeName]) {
                 id elementAttributeValue = [uiElement valueForAttribute:attributeName];
                 //NSLog(@"attributeName: %@ attributeValue: %@ elementAttributeValue: %@", attributeName, attributeValue, elementAttributeValue);
-                
+ 
                 // In our universe, an empty string is equal to a nil uiElement attribute value.
                 if ([operation[kPredicateComparisonOperation] isEqualToString:kPredicateEQUALS]) {
                     doesMatch = (elementAttributeValue != nil && 
                                  [elementAttributeValue isKindOfClass:[NSString class]] && 
-                                 [elementAttributeValue isEqualToString:attributeValue]) 
+                                 ((!isPartialMatch && [elementAttributeValue isEqualToString:attributeValue]) ||
+                                  (isPartialMatch && [elementAttributeValue hasPrefix:attributeValue])))
                     || (elementAttributeValue == nil && [@"" isEqualToString:attributeValue]);
                 } else if ([operation[kPredicateComparisonOperation] isEqualToString:kPredicateNOTEQUALS]) {
                     doesMatch = (elementAttributeValue != nil && 
